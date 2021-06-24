@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "A template to log EC2StatusHealth Events to centralized logging solution"
+Parameters:
+  LambdaFunctionNames:
+    Description: "Name of Lambda function that needs monitoring"
+    Type: String
+    MinLength: '1'
+    MaxLength: '63'
+    Default: 'loggingErrorLambda'
+  LambdaFunctionTags:
+    Description: "Tag name to filter lambda functions"
+    Type: String
+    MinLength: '0'
+    MaxLength: '63'
+    Default: ''
+  LambdaFunctionTagsValue:
+    Description: "Tag name to filter lambda functions"
+    Type: String
+    MinLength: '0'
+    MaxLength: '63'
+    Default: ''
+  CloudWatchLog:
+    NoEcho: 'false'
+    Type: String
+    Description: "Log group name where Lambda logs the output. Usually it is /aws/lambda/NameOfLambda"
+    MinLength: '1'
+    MaxLength: '63'
+    Default: '/aws/lambda/loggingErrorLambda'
+  SlackChannelId:
+    Description: "Name of slack channel id"
+    Type: String
+    MinLength: '1'
+    MaxLength: '63'
+    Default: 'C01U80K9KPD'
+  SlackWorkspaceId:
+    Description: "Name of slack workspace id"
+    Type: String
+    MinLength: '1'
+    MaxLength: '63'
+    Default: 'T016M3G1GHZ'
+  AlarmEMail:
+    Description: "Email Id for the SNS topic subscription"
+    Type: String
+    MinLength: '1'
+    MaxLength: '63'
+    Default: 'arindoms@amazon.com'
+
+Resources:
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint:  
+            !Ref AlarmEMail
+          Protocol: "email"
+          
+  SvcLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+          RoleName:
+            Fn::Sub: BuildSpecDataSvcLambdaRole-${AWS::StackName}
+          AssumeRolePolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Principal:
+                  Service:
+                    - "lambda.amazonaws.com"
+                Action:
+                  - "sts:AssumeRole"
+          Path: /
+          Policies:
+              -
+                PolicyName:
+                  Fn::Sub: BuildSpecDataSvcLambdaRole-${AWS::StackName}-Policy
+                PolicyDocument:
+                  Version: "2012-10-17"
+                  Statement:
+                    -
+                      Effect: "Allow"
+                      Action:
+                        - "logs:CreateLogGroup"
+                        - "logs:CreateLogStream"
+                        - "logs:PutLogEvents"
+                      Resource:
+                        - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+                    -
+                      Effect: "Allow"
+                      Action:
+                        - "cloudwatch:PutMetricAlarm"
+                      Resource:
+                        - Fn::Sub: arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:*
+                    -
+                      Effect: "Allow"
+                      Action:
+                        - "lambda:ListFunctions"
+                        - "lambda:ListTags"
+                      Resource:
+                        - Fn::Sub: "*"
+
+  BuildSpecDataSvcFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "index.lambda_handler"
+      Role:
+        Fn::GetAtt:
+          - "SvcLambdaRole"
+          - "Arn"
+      Code:
+        ZipFile: |
+          import urllib3
+          import json
+          import boto3
+          import botocore
+          import traceback
+          import os
+          import os.path
+          import cfnresponse
+          from botocore.exceptions import ClientError
+
+          def lambda_handler(event, context):
+              # TODO implement
+              
+              # This assumes both ~/.aws/credentials and ~/.aws/config (for region are present)
+              session = boto3.Session()
+              lambda_client = session.client('lambda')
+              cloudwatch = session.client('cloudwatch')
+              
+              # Remove permissions / policies from specific lambda function
+              paginator = lambda_client.get_paginator('list_functions')
+              response_iterator = paginator.paginate()
+              
+              count = 0
+              
+              for response in response_iterator:
+                functions = response["Functions"]
+              
+                for function in functions:
+                    function_name = function["FunctionName"]
+                    function_arn = function["FunctionArn"]
+                  
+                    function_name = str(function_name)
+                    try:
+                      resp = lambda_client.list_tags(Resource=function_arn)
+                      if resp['Tags'].get(os.environ["LambdaFunctionTags"]) is not None:
+                        if resp['Tags'][os.environ["LambdaFunctionTags"]] == os.environ["LambdaFunctionTagsValue"]:
+                          # Add Cloudwatch Metric Alarm
+                          cloudwatch.put_metric_alarm(
+                              AlarmName='Lambda_CPU_Utilization_%s' % function_name,
+                              ComparisonOperator='GreaterThanThreshold',
+                              EvaluationPeriods=1,
+                              MetricName='Errors',
+                              Namespace='AWS/Lambda',
+                              Period=300,
+                              Statistic='Average',
+                              Threshold=0,
+                              ActionsEnabled=False,
+                              AlarmDescription='Alarm when error queue depth is more than 10',
+                              Dimensions=[
+                                  {
+                                    'Name': 'FunctionName',
+                                    'Value': function_name
+                                  },
+                              ],
+                              Unit='Seconds'
+                          )
+
+                      # Signal CFN stack on execution completion
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "CustomResourcePhysicalID")
+                  
+                    except ClientError as e:
+                      print(e.response['Error']['Message'] + ' ' + function_name)
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Hello from Lambda!')
+              }
+
+      Runtime: "python3.8"
+      Environment:
+        Variables:
+          LambdaFunctionNames: !Ref LambdaFunctionNames
+          LambdaFunctionTags: !Ref LambdaFunctionTags
+      Timeout: 150
+      MemorySize: 256
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: BuildSpecDataSvcFunction-${AWS::StackName}
+  Primerinvoke:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BuildSpecDataSvcFunction
+    Version: "1.0"
+    Properties:
+      ServiceToken: !GetAtt BuildSpecDataSvcFunction.Arn
+
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if queue depth grows beyond 10 messages"
+      Namespace: "AWS/Lambda"
+      MetricName: 'Errors'
+      Dimensions: 
+        - Name: 'FunctionName'
+          Value : !Ref BuildSpecDataSvcFunction
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: "1"
+      Threshold: "0"
+      ComparisonOperator: "GreaterThanThreshold"
+      AlarmActions: 
+        - !Ref AlarmTopic
+      InsufficientDataActions: 
+        - !Ref AlarmTopic
+
+  RestrictedReadOnlyPol:
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: "RestrictedReadOnlyPol"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Deny"
+            Action:
+              - 'iam:*'
+              - 's3:GetBucketPolicy'
+              - 'ssm:*'
+              - 'sts:*'
+              - 'kms:*'
+              - 'cognito-idp:GetSigningCertificate'
+              - 'ec2:GetPasswordData'
+              - 'ecr:GetAuthorizationToken'
+              - 'gamelift:RequestUploadCredentials'
+              - 'gamelift:GetInstanceAccess'
+              - 'lightsail:DownloadDefaultKeyPair'
+              - 'lightsail:GetInstanceAccessDetails'
+              - 'lightsail:GetKeyPair'
+              - 'lightsail:GetKeyPairs'
+              - 'redshift:GetClusterCredentials'
+              - 'storagegateway:DescribeChapCredentials'
+            Resource: "*"
+      Roles: 
+        - !Ref Chatbotrole
+    DependsOn: Chatbotrole
+
+  Chatbotrole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - chatbot.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: Role for Chatbot to assume
+      ManagedPolicyArns: 
+        - 'arn:aws:iam::aws:policy/ReadOnlyAccess'
+      MaxSessionDuration: 3600
+
+  SlackChatbot:
+    Type: AWS::Chatbot::SlackChannelConfiguration
+    Properties: 
+      ConfigurationName: 'notifyslack'
+      IamRoleArn: !GetAtt Chatbotrole.Arn
+      LoggingLevel: 'ERROR'
+      SlackChannelId: !Ref SlackChannelId
+      SlackWorkspaceId: !Ref SlackWorkspaceId
+      SnsTopicArns: 
+        - !Ref AlarmTopic
+    DependsOn: Chatbotrole
+
+Outputs:
+  SNSTopicARN:
+    Value: !Ref AlarmTopic
+    Description: Topic ARN of newly created SNS topic
