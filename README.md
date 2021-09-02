@@ -1,11 +1,5 @@
 ## Monitor Lambda Failures via slack
 
-TODO: Fill this README out!
-
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
 
 ## Security
 
@@ -15,15 +9,13 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 
 This library is licensed under the MIT-0 License. See the LICENSE file.
 
-
 ### **Prerequisite**
 
-* Please run chatbot wizard for slack and get workspace ID for your slack
+1. **Workspace ID** - Run chatbot wizard for slack in AWS console to get workspace ID for your slack. e.g *T01UXHUCRMW*
+2. **Slack Channel ID** - Right-click on your channel in slack and copy the link. Use last portion to get slack Channel ID. e.g. *C01U80K9KPD*
 
-Steps**
+### Steps
 
-* Use cloudformation template here to deploy infra.
-* CF template has default values for slack channel that is used for testing. Please change it to what is appropriate for you.
-* Add New Lambda to the topic:
-
-aws cloudwatch put-metric-alarm --alarm-name cpu-mon --alarm-description "Alarm if queue depth grows beyond 10 messages" --metric-name Errors --namespace AWS/Lambda --statistic Average --period 300 --threshold 0 --comparison-operator GreaterThanThreshold  --dimensions "Name=FunctionName,Value=SimulateError2" --evaluation-periods 1 --alarm-actions arn:aws:sns:us-west-2:889468317612:SimulateError-AlarmTopic-1HWQFL2AYCYQ2 --region us-west-2
+* Use cloudformation template from here to deploy infra.
+* Enter the parameters such as ****AlarmEmail**, LambdaFunctionNames**, **LambdaFunctionTags**, **LambdaFunctionTagsValue**, **SlackWorkspaceId** and **SlackChannelId**
+*
