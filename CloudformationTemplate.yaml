@@ -4,9 +4,9 @@ Parameters:
   LambdaFunctionNames:
     Description: "Name of Lambda function that needs monitoring"
     Type: String
-    MinLength: '1'
+    MinLength: '0'
     MaxLength: '63'
-    Default: 'loggingErrorLambda'
+    Default: ''
   LambdaFunctionTags:
     Description: "Tag name to filter lambda functions"
     Type: String
@@ -14,18 +14,11 @@ Parameters:
     MaxLength: '63'
     Default: ''
   LambdaFunctionTagsValue:
-    Description: "Tag name to filter lambda functions"
+    Description: "Value for the given tag"
     Type: String
     MinLength: '0'
     MaxLength: '63'
     Default: ''
-  CloudWatchLog:
-    NoEcho: 'false'
-    Type: String
-    Description: "Log group name where Lambda logs the output. Usually it is /aws/lambda/NameOfLambda"
-    MinLength: '1'
-    MaxLength: '63'
-    Default: '/aws/lambda/loggingErrorLambda'
   SlackChannelId:
     Description: "Name of slack channel id"
     Type: String
@@ -37,13 +30,13 @@ Parameters:
     Type: String
     MinLength: '1'
     MaxLength: '63'
-    Default: 'T016M3G1GHZ'
+    Default: 'T01UXHUCRMW'
   AlarmEMail:
     Description: "Email Id for the SNS topic subscription"
     Type: String
     MinLength: '1'
     MaxLength: '63'
-    Default: 'arindoms@amazon.com'
+    Default: 'pnagweka@amazon.com'
 
 Resources:
   AlarmTopic:
@@ -53,7 +46,7 @@ Resources:
         - Endpoint:  
             !Ref AlarmEMail
           Protocol: "email"
-          
+
   SvcLambdaRole:
       Type: AWS::IAM::Role
       Properties:
@@ -117,25 +110,65 @@ Resources:
           import os
           import os.path
           import cfnresponse
+          import logging
           from botocore.exceptions import ClientError
+
+          # Set up logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          # See Environment Variabls
+          LambdaFunctionTags = os.environ.get('LambdaFunctionTags')
+          LambdaFunctionTagsValue = os.environ.get('LambdaFunctionTagsValue')
+          LambdaFunctionNames = os.environ.get('LambdaFunctionNames')
+
+          # This assumes both ~/.aws/credentials and ~/.aws/config (for region are present)
+          session = boto3.Session()
+          lambda_client = session.client('lambda')
+          cloudwatch = session.client('cloudwatch')
+
+          def createcwalarm(function_name):
+              # Add Cloudwatch Metric Alarm
+              try:
+                  cloudwatch.put_metric_alarm(
+                  AlarmName='Lambda_HighErrorCount_%s' % function_name,
+                  ComparisonOperator='GreaterThanThreshold',
+                  EvaluationPeriods=1,
+                  MetricName='Errors',
+                  Namespace='AWS/Lambda',
+                  Period=300,
+                  Statistic='Average',
+                  Threshold=0,
+                  ActionsEnabled=False,
+                  AlarmDescription='Alarm when error queue depth is more than 10',
+                  Dimensions=[
+                      {
+                          'Name': 'FunctionName',
+                          'Value': function_name
+                      },
+                  ],
+                  Unit='Seconds')
+              except ClientError as e:
+                  print(e.response['Error']['Message'] + ' ' + function_name)
+              return()
 
           def lambda_handler(event, context):
               # TODO implement
               
-              # This assumes both ~/.aws/credentials and ~/.aws/config (for region are present)
-              session = boto3.Session()
-              lambda_client = session.client('lambda')
-              cloudwatch = session.client('cloudwatch')
-              
+              # Check for Funcation Names
+              functionlist = LambdaFunctionNames.split(",")
+              for f in functionlist:
+                  logger.info('## Create CW alarm for function %s' % f)
+                  createcwalarm(f)
+            
               # Remove permissions / policies from specific lambda function
               paginator = lambda_client.get_paginator('list_functions')
               response_iterator = paginator.paginate()
               
-              count = 0
-              
+              # Iterate through list of functions
               for response in response_iterator:
                 functions = response["Functions"]
-              
+
                 for function in functions:
                     function_name = function["FunctionName"]
                     function_arn = function["FunctionArn"]
@@ -143,44 +176,32 @@ Resources:
                     function_name = str(function_name)
                     try:
                       resp = lambda_client.list_tags(Resource=function_arn)
-                      if resp['Tags'].get(os.environ["LambdaFunctionTags"]) is not None:
-                        if resp['Tags'][os.environ["LambdaFunctionTags"]] == os.environ["LambdaFunctionTagsValue"]:
-                          # Add Cloudwatch Metric Alarm
-                          cloudwatch.put_metric_alarm(
-                              AlarmName='Lambda_CPU_Utilization_%s' % function_name,
-                              ComparisonOperator='GreaterThanThreshold',
-                              EvaluationPeriods=1,
-                              MetricName='Errors',
-                              Namespace='AWS/Lambda',
-                              Period=300,
-                              Statistic='Average',
-                              Threshold=0,
-                              ActionsEnabled=False,
-                              AlarmDescription='Alarm when error queue depth is more than 10',
-                              Dimensions=[
-                                  {
-                                    'Name': 'FunctionName',
-                                    'Value': function_name
-                                  },
-                              ],
-                              Unit='Seconds'
-                          )
+                      # Find if function has required tag
+                      if LambdaFunctionTags in resp['Tags'].keys():
+                          logger.info('## Required Tag exist in Function %s. Cloudwatch alarm will be creates for the same' % function_name)
+                          # Create CW alarm if required tag key and value exists
+                          if resp['Tags'][LambdaFunctionTags] == LambdaFunctionTagsValue:
+                              createcwalarm(function_name)
 
                       # Signal CFN stack on execution completion
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "CustomResourcePhysicalID")
+                      responseData = {'Message': 'Hello {}!'.format(event['ResourceProperties']['Name'])}
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")
                   
                     except ClientError as e:
                       print(e.response['Error']['Message'] + ' ' + function_name)
+                      
               return {
                   'statusCode': 200,
                   'body': json.dumps('Hello from Lambda!')
               }
+
 
       Runtime: "python3.8"
       Environment:
         Variables:
           LambdaFunctionNames: !Ref LambdaFunctionNames
           LambdaFunctionTags: !Ref LambdaFunctionTags
+          LambdaFunctionTagsValue: !Ref LambdaFunctionTagsValue
       Timeout: 150
       MemorySize: 256
       Tags:
