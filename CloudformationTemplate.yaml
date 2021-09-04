@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: "A template to log EC2StatusHealth Events to centralized logging solution"
+Description: "A template to send failures of Lambda to slack using Chatbot"
 Parameters:
   LambdaFunctionNames:
     Description: "Name of Lambda function that needs monitoring"
@@ -121,6 +121,7 @@ Resources:
           LambdaFunctionTags = os.environ.get('LambdaFunctionTags')
           LambdaFunctionTagsValue = os.environ.get('LambdaFunctionTagsValue')
           LambdaFunctionNames = os.environ.get('LambdaFunctionNames')
+          AlarmTopic = os.environ.get('AlarmTopic')
 
           # This assumes both ~/.aws/credentials and ~/.aws/config (for region are present)
           session = boto3.Session()
@@ -139,7 +140,13 @@ Resources:
                   Period=300,
                   Statistic='Average',
                   Threshold=0,
-                  ActionsEnabled=False,
+                  ActionsEnabled=True,
+                  AlarmActions=[
+                      AlarmTopic,
+                  ],
+                  InsufficientDataActions=[
+                      AlarmTopic,
+                  ],
                   AlarmDescription='Alarm when error queue depth is more than 10',
                   Dimensions=[
                       {
@@ -156,10 +163,11 @@ Resources:
               # TODO implement
               
               # Check for Funcation Names
-              functionlist = LambdaFunctionNames.split(",")
-              for f in functionlist:
-                  logger.info('## Create CW alarm for function %s' % f)
-                  createcwalarm(f)
+              if len(LambdaFunctionNames) > 0:
+                functionlist = LambdaFunctionNames.split(",")
+                for f in functionlist:
+                    logger.info('## Create CW alarm for function %s' % f)
+                    createcwalarm(f)
             
               # Remove permissions / policies from specific lambda function
               paginator = lambda_client.get_paginator('list_functions')
@@ -184,8 +192,9 @@ Resources:
                               createcwalarm(function_name)
 
                       # Signal CFN stack on execution completion
-                      responseData = {'Message': 'Hello {}!'.format(event['ResourceProperties']['Name'])}
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")
+                      # responseData = {'Message': 'Hello {}!'.format(event['ResourceProperties']['Name'])}
+                      # cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "CustomResourcePhysicalID")
                   
                     except ClientError as e:
                       print(e.response['Error']['Message'] + ' ' + function_name)
@@ -202,6 +211,7 @@ Resources:
           LambdaFunctionNames: !Ref LambdaFunctionNames
           LambdaFunctionTags: !Ref LambdaFunctionTags
           LambdaFunctionTagsValue: !Ref LambdaFunctionTagsValue
+          AlarmTopic: !Ref AlarmTopic
       Timeout: 150
       MemorySize: 256
       Tags:
