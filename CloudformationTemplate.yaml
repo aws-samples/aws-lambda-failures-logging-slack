@@ -147,14 +147,14 @@ Resources:
                   InsufficientDataActions=[
                       AlarmTopic,
                   ],
-                  AlarmDescription='Alarm when error queue depth is more than 10',
+                  AlarmDescription='Alarm when error queue depth is more than 1',
                   Dimensions=[
                       {
                           'Name': 'FunctionName',
                           'Value': function_name
                       },
-                  ],
-                  Unit='Seconds')
+                  ]
+                  )
               except ClientError as e:
                   print(e.response['Error']['Message'] + ' ' + function_name)
               return()
